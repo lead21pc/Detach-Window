@@ -1,0 +1,5 @@
+C:\Users\Sheeplark\Documents\Detach Window\publish\ExplorerWorkspace.exe
+C:\Users\Sheeplark\Documents\Detach Window\publish\ExplorerWorkspace.dll
+C:\Users\Sheeplark\Documents\Detach Window\publish\ExplorerWorkspace.deps.json
+C:\Users\Sheeplark\Documents\Detach Window\publish\ExplorerWorkspace.runtimeconfig.json
+C:\Users\Sheeplark\Documents\Detach Window\publish\ExplorerWorkspace.pdb
