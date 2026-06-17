@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ExplorerWorkspace")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+67f7cd4705d755331950e2f73be557b15551ea63")]
 [assembly: System.Reflection.AssemblyProductAttribute("ExplorerWorkspace")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ExplorerWorkspace")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

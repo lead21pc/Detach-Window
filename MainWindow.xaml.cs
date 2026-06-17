@@ -25,7 +25,7 @@ public partial class MainWindow : Window
     private GroupState? _group;
     private WinEventDelegate? _eventDelegate;
     private IntPtr _eventHook;
-    private bool _synchronizingGroup;
+    private bool _isSyncing;
     private DateTime _ignoreGroupEventsUntilUtc;
 
     public MainWindow()
@@ -139,9 +139,7 @@ public partial class MainWindow : Window
         foreach (var savedWindow in saved.Windows)
         {
             var match = _windows.FirstOrDefault(w =>
-                string.Equals(w.Folder, savedWindow.Folder, StringComparison.OrdinalIgnoreCase))
-                ?? _windows.FirstOrDefault(w =>
-                    string.Equals(w.Title, savedWindow.Title, StringComparison.OrdinalIgnoreCase));
+                string.Equals(w.Folder, savedWindow.Folder, StringComparison.OrdinalIgnoreCase));
             if (match is null || matched.Any(w => w.Hwnd == match.Hwnd))
                 continue;
 
@@ -198,10 +196,30 @@ public partial class MainWindow : Window
         if (DateTime.UtcNow < _ignoreGroupEventsUntilUtc)
             return;
 
+        var dead = _group.Members.Where(w => !Win32.IsWindow(w.Hwnd)).ToList();
+        foreach (var d in dead)
+        {
+            _group.Members.Remove(d);
+            _group.LastRects.Remove(d.Hwnd);
+            _group.OriginalRects.Remove(d.Hwnd);
+        }
+
+        if (_group.Members.Count < 1)
+        {
+            DetachGroup("All Explorer windows closed.");
+            return;
+        }
+
         if (!Win32.IsWindow(_group.Main.Hwnd))
         {
-            DetachGroup("Main Explorer window closed. Detached group.");
-            return;
+            if (_group.Members.Count < 2)
+            {
+                DetachGroup("Too few windows remaining.");
+                return;
+            }
+
+            _group = _group.PromoteNewMain();
+            Status($"Main window closed. Promoted '{_group.Main.Title}' as new anchor.");
         }
 
         if (!Win32.GetWindowRect(_group.Main.Hwnd, out var currentMain))
@@ -237,7 +255,7 @@ public partial class MainWindow : Window
 
     private void HandleGroupEvent(uint eventType, IntPtr hwnd)
     {
-        if (_group is null || _synchronizingGroup)
+        if (_group is null || _isSyncing)
             return;
 
         if (DateTime.UtcNow < _ignoreGroupEventsUntilUtc)
@@ -252,6 +270,9 @@ public partial class MainWindow : Window
                 MinimizeGroup(_group);
                 break;
             case Win32.EVENT_SYSTEM_FOREGROUND:
+                if (!_group.Contains(hwnd))
+                    break;
+
                 if (_group.Members.All(w => Win32.IsIconic(w.Hwnd)))
                     RestoreGroup(_group, hwnd, activate: true);
                 else
@@ -268,15 +289,15 @@ public partial class MainWindow : Window
 
     private void ApplyLayout(GroupState group, Win32.RECT mainRect)
     {
-        var wasSynchronizing = _synchronizingGroup;
-        _synchronizingGroup = true;
+        var wasSynchronizing = _isSyncing;
+        _isSyncing = true;
         try
         {
             ReflowGroup(group, mainRect);
         }
         finally
         {
-            _synchronizingGroup = wasSynchronizing;
+            _isSyncing = wasSynchronizing;
         }
     }
 
@@ -307,39 +328,25 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _synchronizingGroup = false;
+            _isSyncing = false;
         }
     }
 
     private void LockMainSize(GroupState group, Win32.RECT currentMain)
     {
-        if (_synchronizingGroup)
+        if (_isSyncing)
             return;
 
-        _synchronizingGroup = true;
+        var prev = _isSyncing;
+        _isSyncing = true;
         try
         {
-            var locked = Win32.RECT.From(
-                currentMain.Left,
-                currentMain.Top,
-                group.MainLockedSize.Width,
-                group.MainLockedSize.Height);
-
-            Win32.SetWindowPos(
-                group.Main.Hwnd,
-                IntPtr.Zero,
-                locked.Left,
-                locked.Top,
-                locked.Width,
-                locked.Height,
-                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
-
-            group.LastRects[group.Main.Hwnd] = locked;
-            group.LastMainRect = locked;
+            group.UpdateLockedSize(currentMain);
+            ReflowGroup(group, currentMain);
         }
         finally
         {
-            _synchronizingGroup = false;
+            _isSyncing = prev;
         }
     }
 
@@ -355,10 +362,10 @@ public partial class MainWindow : Window
 
     private void MinimizeGroup(GroupState group)
     {
-        if (_synchronizingGroup)
+        if (_isSyncing)
             return;
 
-        _synchronizingGroup = true;
+        _isSyncing = true;
         _ignoreGroupEventsUntilUtc = DateTime.UtcNow.AddMilliseconds(300);
         try
         {
@@ -368,16 +375,16 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _synchronizingGroup = false;
+            _isSyncing = false;
         }
     }
 
     private void RestoreGroup(GroupState group, IntPtr activatingHwnd, bool activate)
     {
-        if (_synchronizingGroup)
+        if (_isSyncing)
             return;
 
-        _synchronizingGroup = true;
+        _isSyncing = true;
         _ignoreGroupEventsUntilUtc = DateTime.UtcNow.AddMilliseconds(300);
         try
         {
@@ -392,16 +399,16 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _synchronizingGroup = false;
+            _isSyncing = false;
         }
     }
 
     private void ActivateGroup(GroupState group, IntPtr activatingHwnd)
     {
-        if (_synchronizingGroup)
+        if (_isSyncing)
             return;
 
-        _synchronizingGroup = true;
+        _isSyncing = true;
         _ignoreGroupEventsUntilUtc = DateTime.UtcNow.AddMilliseconds(200);
         try
         {
@@ -410,7 +417,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _synchronizingGroup = false;
+            _isSyncing = false;
         }
     }
 
@@ -468,8 +475,10 @@ public partial class MainWindow : Window
         var rects = new List<Win32.RECT>();
         var left = main.Left;
         var top = main.Top;
+        var workArea = Win32.GetWorkArea(main);
         var targetCols = Math.Max(2, (int)Math.Ceiling(Math.Sqrt(group.Members.Count)));
-        var rightBoundary = left + (targetCols * DefaultWindowWidth * 2) + ((targetCols - 1) * LayoutSpacing);
+        var rightBoundary = Math.Max(left + DefaultWindowWidth, workArea.Right);
+        var maxWidth = Math.Max(240, rightBoundary - left);
         var cursorX = left;
         var cursorY = top;
         var rowHeight = 0;
@@ -480,7 +489,7 @@ public partial class MainWindow : Window
             if (!group.LastRects.TryGetValue(window.Hwnd, out var sizeRect))
                 Win32.GetWindowRect(window.Hwnd, out sizeRect);
 
-            var width = Math.Clamp(sizeRect.Width, 240, DefaultWindowWidth + 260);
+            var width = Math.Clamp(sizeRect.Width, 240, maxWidth);
             var height = Math.Clamp(sizeRect.Height, 180, DefaultWindowHeight + 220);
 
             var itemsInRow = i % targetCols;
@@ -562,11 +571,35 @@ public sealed class GroupState
     public Dictionary<IntPtr, Win32.RECT> OriginalRects { get; }
     public Dictionary<IntPtr, Win32.RECT> LastRects { get; }
     public LayoutKind Layout { get; }
-    public Win32.RECT MainLockedSize { get; }
+    public Win32.RECT MainLockedSize { get; set; }
     public bool LastMinimized { get; set; }
     public IntPtr LastForegroundHwnd { get; set; }
 
     public bool Contains(IntPtr hwnd) => Members.Any(w => w.Hwnd == hwnd);
+
+    public void UpdateLockedSize(Win32.RECT newMain)
+    {
+        MainLockedSize = new Win32.RECT(0, 0, newMain.Width, newMain.Height);
+        LastMainRect = newMain;
+        LastRects[Main.Hwnd] = newMain;
+    }
+
+    public GroupState PromoteNewMain()
+    {
+        var nextMain = Members.First();
+        Win32.GetWindowRect(nextMain.Hwnd, out var newMainRect);
+        var promoted = new GroupState(
+            nextMain,
+            Members.ToList(),
+            newMainRect,
+            new Dictionary<IntPtr, Win32.RECT>(LastRects),
+            Layout);
+
+        promoted.MainLockedSize = MainLockedSize;
+        promoted.LastMinimized = LastMinimized;
+        promoted.LastForegroundHwnd = LastForegroundHwnd;
+        return promoted;
+    }
 }
 
 public sealed record SavedLayout(LayoutKind Layout, List<SavedWindow> Windows);
@@ -593,8 +626,13 @@ public static class ExplorerScanner
             if (string.IsNullOrWhiteSpace(title))
                 title = "Explorer";
 
-            folderByHwnd.TryGetValue(hwnd, out var folder);
-            result.Add(new ExplorerWindow(hwnd, title, folder ?? ""));
+            if (!folderByHwnd.TryGetValue(hwnd, out var folder) || string.IsNullOrWhiteSpace(folder))
+                return true;
+
+            if (!IsFilesystemFolder(folder))
+                return true;
+
+            result.Add(new ExplorerWindow(hwnd, title, folder));
             return true;
         }, IntPtr.Zero);
 
@@ -617,7 +655,8 @@ public static class ExplorerScanner
                 {
                     var hwnd = new IntPtr((long)window.HWND);
                     string path = window.Document.Folder.Self.Path;
-                    result[hwnd] = path;
+                    if (IsFilesystemFolder(path))
+                        result[hwnd] = path;
                 }
                 catch
                 {
@@ -631,6 +670,17 @@ public static class ExplorerScanner
         }
 
         return result;
+    }
+
+    private static bool IsFilesystemFolder(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        if (path.StartsWith("::", StringComparison.Ordinal) || path.StartsWith("{", StringComparison.Ordinal))
+            return false;
+
+        return Path.IsPathRooted(path);
     }
 }
 
@@ -695,6 +745,12 @@ public static partial class Win32
     public static extern bool IsIconic(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromRect(ref RECT lprc, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -702,6 +758,20 @@ public static partial class Win32
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+
+    public static RECT GetWorkArea(RECT rect)
+    {
+        var monitor = MonitorFromRect(ref rect, MONITOR_DEFAULTTONEAREST);
+        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (monitor != IntPtr.Zero && GetMonitorInfo(monitor, ref info))
+            return info.rcWork;
+
+        return new RECT(
+            (int)SystemParameters.WorkArea.Left,
+            (int)SystemParameters.WorkArea.Top,
+            (int)SystemParameters.WorkArea.Right,
+            (int)SystemParameters.WorkArea.Bottom);
+    }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
@@ -721,6 +791,17 @@ public static partial class Win32
 
     [DllImport("user32.dll")]
     public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    [StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
 
     public static string GetClassNameText(IntPtr hwnd)
     {

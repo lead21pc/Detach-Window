@@ -17,3 +17,4 @@ C:\Users\Sheeplark\Documents\Detach Window\obj\Release\net8.0-windows\win-x64\re
 C:\Users\Sheeplark\Documents\Detach Window\obj\Release\net8.0-windows\win-x64\ExplorerWorkspace.pdb
 C:\Users\Sheeplark\Documents\Detach Window\obj\Release\net8.0-windows\win-x64\ExplorerWorkspace.genruntimeconfig.cache
 C:\Users\Sheeplark\Documents\Detach Window\obj\Release\net8.0-windows\win-x64\ref\ExplorerWorkspace.dll
+C:\Users\Sheeplark\Documents\Detach Window\obj\Release\net8.0-windows\win-x64\ExplorerWorkspace.sourcelink.json
