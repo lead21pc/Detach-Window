@@ -136,14 +136,17 @@ public partial class MainWindow : Window
         }
 
         var matched = new List<ExplorerWindow>();
+        var restoredRects = new Dictionary<IntPtr, Win32.RECT>();
         foreach (var savedWindow in saved.Windows)
         {
             var match = _windows.FirstOrDefault(w =>
+                !matched.Any(existing => existing.Hwnd == w.Hwnd) &&
                 string.Equals(w.Folder, savedWindow.Folder, StringComparison.OrdinalIgnoreCase));
-            if (match is null || matched.Any(w => w.Hwnd == match.Hwnd))
+            if (match is null)
                 continue;
 
             matched.Add(match);
+            restoredRects[match.Hwnd] = savedWindow.Rect;
             Win32.SetWindowPos(
                 match.Hwnd,
                 IntPtr.Zero,
@@ -156,18 +159,13 @@ public partial class MainWindow : Window
 
         if (matched.Count >= 2)
         {
-            Win32.GetWindowRect(matched[0].Hwnd, out var mainRect);
+            var mainRect = restoredRects[matched[0].Hwnd];
             _group = new GroupState(
                 matched[0],
                 matched,
                 mainRect,
-                matched.ToDictionary(w => w.Hwnd, w =>
-                {
-                    Win32.GetWindowRect(w.Hwnd, out var rect);
-                    return rect;
-                }),
+                new Dictionary<IntPtr, Win32.RECT>(restoredRects),
                 saved.Layout);
-            ApplyLayout(_group, mainRect);
             RestoreGroup(_group, matched[0].Hwnd, activate: true);
             _syncTimer.Start();
         }
@@ -503,6 +501,27 @@ public partial class MainWindow : Window
             rects.Add(Win32.RECT.From(cursorX, cursorY, width, height));
             cursorX += width + LayoutSpacing;
             rowHeight = Math.Max(rowHeight, height);
+        }
+
+        if (rects.Count > 0)
+        {
+            var minTop = rects.Min(r => r.Top);
+            var maxBottom = rects.Max(r => r.Bottom);
+            if (maxBottom > workArea.Bottom)
+            {
+                var shiftUp = maxBottom - workArea.Bottom;
+                if (minTop - shiftUp < workArea.Top)
+                    shiftUp = minTop - workArea.Top;
+
+                if (shiftUp > 0)
+                {
+                    for (var i = 0; i < rects.Count; i++)
+                    {
+                        var rect = rects[i];
+                        rects[i] = Win32.RECT.From(rect.Left, rect.Top - shiftUp, rect.Width, rect.Height);
+                    }
+                }
+            }
         }
 
         return rects;
