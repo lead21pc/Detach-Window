@@ -4,6 +4,8 @@ Local-only Windows 10 utility for temporarily grouping existing File Explorer wi
 
 This app does not replace Explorer, embed Explorer, create tabs, install shell extensions, or implement a custom file manager. It only enumerates normal Explorer windows and moves/resizes them with Win32 APIs.
 
+this was making by vibe coding, do not expect me to understand basic coding and request any changes, thanks.
+
 ## Build
 
 ```powershell
