@@ -107,16 +107,38 @@ public partial class MainWindow : Window
             return;
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(_layoutFile)!);
-        var saved = new SavedLayout(
-            _group.Layout,
-            _group.Members.Select(w =>
-            {
-                Win32.GetWindowRect(w.Hwnd, out var rect);
-                return new SavedWindow(w.Title, w.Folder, rect);
-            }).ToList());
-        File.WriteAllText(_layoutFile, JsonSerializer.Serialize(saved, new JsonSerializerOptions { WriteIndented = true }));
-        Status($"Saved layout to {_layoutFile}");
+        var savedWindows = new List<SavedWindow>();
+        foreach (var window in _group.Members)
+        {
+            if (!Win32.IsWindow(window.Hwnd) || !Win32.GetWindowRect(window.Hwnd, out var rect))
+                continue;
+
+            savedWindows.Add(new SavedWindow(window.Title, window.Folder, rect));
+        }
+
+        if (savedWindows.Count < 2)
+        {
+            Status("Could not save the workspace because fewer than 2 Explorer windows are still available.");
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_layoutFile)!);
+            var saved = new SavedLayout(_group.Layout, savedWindows);
+            File.WriteAllText(
+                _layoutFile,
+                JsonSerializer.Serialize(saved, new JsonSerializerOptions { WriteIndented = true }));
+            Status($"Saved layout to {_layoutFile}");
+        }
+        catch (IOException)
+        {
+            Status("Could not write the layout file.");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Status("Could not write the layout file because access was denied.");
+        }
     }
 
     private void Restore_Click(object sender, RoutedEventArgs e)
@@ -128,8 +150,29 @@ public partial class MainWindow : Window
         }
 
         RefreshExplorerWindows();
-        var saved = JsonSerializer.Deserialize<SavedLayout>(File.ReadAllText(_layoutFile));
-        if (saved is null || saved.Windows.Count == 0)
+
+        SavedLayout? saved;
+        try
+        {
+            saved = JsonSerializer.Deserialize<SavedLayout>(File.ReadAllText(_layoutFile));
+        }
+        catch (JsonException)
+        {
+            Status("Saved layout file contains invalid JSON.");
+            return;
+        }
+        catch (IOException)
+        {
+            Status("Could not read the saved layout file.");
+            return;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Status("Could not read the saved layout file because access was denied.");
+            return;
+        }
+
+        if (saved is null || saved.Windows is null || saved.Windows.Count == 0)
         {
             Status("Saved layout file is empty or invalid.");
             return;
@@ -142,6 +185,11 @@ public partial class MainWindow : Window
             var match = _windows.FirstOrDefault(w =>
                 !matched.Any(existing => existing.Hwnd == w.Hwnd) &&
                 string.Equals(w.Folder, savedWindow.Folder, StringComparison.OrdinalIgnoreCase));
+
+            match ??= _windows.FirstOrDefault(w =>
+                !matched.Any(existing => existing.Hwnd == w.Hwnd) &&
+                string.Equals(w.Title, savedWindow.Title, StringComparison.OrdinalIgnoreCase));
+
             if (match is null)
                 continue;
 
@@ -267,11 +315,15 @@ public partial class MainWindow : Window
             case Win32.EVENT_SYSTEM_MINIMIZESTART:
                 MinimizeGroup(_group);
                 break;
+            case Win32.EVENT_SYSTEM_MINIMIZEEND:
+                if (_group.LastMinimized)
+                    RestoreGroup(_group, hwnd, activate: true);
+                break;
             case Win32.EVENT_SYSTEM_FOREGROUND:
                 if (!_group.Contains(hwnd))
                     break;
 
-                if (_group.Members.All(w => Win32.IsIconic(w.Hwnd)))
+                if (_group.LastMinimized || _group.Members.Any(w => Win32.IsIconic(w.Hwnd)))
                     RestoreGroup(_group, hwnd, activate: true);
                 else
                     ActivateGroup(_group, hwnd);
@@ -451,12 +503,26 @@ public partial class MainWindow : Window
 
     private static List<Win32.RECT> BuildLinearLayout(int count, Win32.RECT main, bool horizontal)
     {
-        var width = DefaultWindowWidth;
-        var height = DefaultWindowHeight;
-        var left = main.Left;
-        var top = main.Top;
-        var rects = new List<Win32.RECT>();
+        var workArea = Win32.GetWorkArea(main);
+        var gaps = LayoutSpacing * Math.Max(0, count - 1);
+        var availableWidth = Math.Max(1, workArea.Width - gaps);
+        var availableHeight = Math.Max(1, workArea.Height - gaps);
 
+        var width = horizontal
+            ? Math.Max(1, Math.Min(main.Width, availableWidth / Math.Max(1, count)))
+            : Math.Max(1, Math.Min(main.Width, workArea.Width));
+        var height = horizontal
+            ? Math.Max(1, Math.Min(main.Height, workArea.Height))
+            : Math.Max(1, Math.Min(main.Height, availableHeight / Math.Max(1, count)));
+
+        var totalWidth = horizontal ? width * count + gaps : width;
+        var totalHeight = horizontal ? height : height * count + gaps;
+        var maxLeft = workArea.Right - totalWidth;
+        var maxTop = workArea.Bottom - totalHeight;
+        var left = Math.Clamp(main.Left, workArea.Left, Math.Max(workArea.Left, maxLeft));
+        var top = Math.Clamp(main.Top, workArea.Top, Math.Max(workArea.Top, maxTop));
+
+        var rects = new List<Win32.RECT>(count);
         for (var i = 0; i < count; i++)
         {
             if (horizontal)
